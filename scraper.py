@@ -277,7 +277,7 @@ def main():
         return
 
     urls = {
-        "rightmove": "https://www.rightmove.co.uk/property-to-rent/find.html?searchLocation=Guildford+Station&useLocationIdentifier=true&locationIdentifier=STATION%5E4037&radius=0.0&minPrice=100&maxPrice=1500&minBedrooms=1&maxBedrooms=2&_includeLetAgreed=on&maxBathrooms=2&index=0&sortType=6&channel=RENT&transactionType=LETTING&displayLocationIdentifier=undefined&minBathrooms=1&letType=longTerm&mustHave=parking&dontShow=houseShare%2Cretirement%2Cstudent&maxDaysSinceAdded=1",
+        "rightmove": "https://www.rightmove.co.uk/property-to-rent/find.html?searchLocation=Guildford+Station&useLocationIdentifier=true&locationIdentifier=STATION%5E4037&radius=0.0&minPrice=100&maxPrice=1500&minBedrooms=1&maxBedrooms=2&_includeLetAgreed=on&maxBathrooms=2&index=0&sortType=6&channel=RENT&transactionType=LETTING&displayLocationIdentifier=undefined&minBathrooms=1&letType=longTerm&mustHave=parking&dontShow=houseShare%2Cretirement%2Cstudent&maxDaysSinceAdded=3",
         "zoopla": "https://www.zoopla.co.uk/to-rent/property/schools/secondary/guildford-centre/?added=24_hours&baths_max=2&baths_min=1&beds_max=2&beds_min=1&feature=has_parking_garage&is_retirement_home=false&is_shared_accommodation=false&is_student_accommodation=false&price_frequency=per_month&price_max=1500&q=Guildford%20Centre%2C%20Surrey%2C%20GU1&radius=1&search_source=to-rent",
         "onthemarket": "https://www.onthemarket.com/to-rent/property/central-guildford/?let-length=long-term&max-bedrooms=2&min-bedrooms=1&max-price=1500&radius=1.0&recently-added=24-hours&shared=false&student=false",
     }
