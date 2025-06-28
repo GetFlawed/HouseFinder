@@ -12,16 +12,23 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# Using a session with a user-agent is good practice
+# Using a session with more comprehensive headers to appear like a real browser
 session = requests.Session()
 session.headers.update(
     {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Cache-Control": "max-age=0",
     }
 )
 
 # File to store URLs of listings that have already been sent
 SENT_LISTINGS_FILE = "sent_listings.json"
+
 
 # --- Data Structure ---
 @dataclass
@@ -42,7 +49,7 @@ class Property:
 def scrape_rightmove(url: str) -> List[Property]:
     """
     Scrapes property listings from a Rightmove URL.
-    This function is more robust as it parses embedded JSON data.
+    UPDATED: Now parses the __NEXT_DATA__ JSON object.
     """
     logging.info("Scraping Rightmove...")
     properties = []
@@ -51,21 +58,17 @@ def scrape_rightmove(url: str) -> List[Property]:
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
-        # Rightmove embeds a JSON object with property data in a script tag.
-        # This is less likely to change than CSS classes.
-        script_content = soup.find(
-            "script", string=re.compile(r"window\.PAGE_MODEL")
-        )
-        if not script_content:
-            logging.warning("Could not find PAGE_MODEL script on Rightmove.")
+        # UPDATED: Rightmove now uses a __NEXT_DATA__ script tag like Zoopla.
+        script = soup.find("script", {"id": "__NEXT_DATA__"})
+        if not script:
+            logging.warning("Could not find __NEXT_DATA__ script on Rightmove.")
             return []
 
-        json_str = re.search(
-            r"window\.PAGE_MODEL = (\{.*\})", script_content.string
-        ).group(1)
-        data = json.loads(json_str)
+        data = json.loads(script.string)
+        # The path to the properties list has changed accordingly.
+        listings = data.get("props", {}).get("pageProps", {}).get("properties", [])
 
-        for listing in data.get("properties", []):
+        for listing in listings:
             try:
                 prop = Property(
                     name=listing.get("displayAddress", "N/A"),
@@ -82,7 +85,9 @@ def scrape_rightmove(url: str) -> List[Property]:
                 )
                 properties.append(prop)
             except (KeyError, IndexError) as e:
-                logging.warning(f"Skipping a Rightmove listing due to parsing error: {e}")
+                logging.warning(
+                    f"Skipping a Rightmove listing due to parsing error: {e}"
+                )
                 continue
 
     except requests.RequestException as e:
@@ -93,7 +98,7 @@ def scrape_rightmove(url: str) -> List[Property]:
 def scrape_zoopla(url: str) -> List[Property]:
     """
     Scrapes property listings from a Zoopla URL.
-    This also parses embedded JSON from a __NEXT_DATA__ script tag.
+    NOTE: The request headers in the session object are critical for this to work.
     """
     logging.info("Scraping Zoopla...")
     properties = []
@@ -102,14 +107,18 @@ def scrape_zoopla(url: str) -> List[Property]:
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
-        # Zoopla (a Next.js site) embeds data in a JSON script tag.
         script = soup.find("script", {"id": "__NEXT_DATA__"})
         if not script:
             logging.warning("Could not find __NEXT_DATA__ script on Zoopla.")
             return []
 
         data = json.loads(script.string)
-        listings = data.get("props", {}).get("pageProps", {}).get("regularListings", {}).get("listings", [])
+        listings = (
+            data.get("props", {})
+            .get("pageProps", {})
+            .get("regularListings", {})
+            .get("listings", [])
+        )
 
         for listing in listings:
             try:
@@ -135,8 +144,7 @@ def scrape_zoopla(url: str) -> List[Property]:
 def scrape_onthemarket(url: str) -> List[Property]:
     """
     Scrapes property listings from an OnTheMarket URL.
-    NOTE: This is less robust as it relies on specific CSS classes.
-    If the scraper breaks, these selectors are the first place to check.
+    This is less robust as it relies on specific CSS classes.
     """
     logging.info("Scraping OnTheMarket...")
     properties = []
@@ -145,15 +153,22 @@ def scrape_onthemarket(url: str) -> List[Property]:
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
-        # Selectors for OnTheMarket. These may need updating if the site changes.
-        for card in soup.select("li.otm-PropertyCard"):
+        # Improved check: See if the main container exists.
+        property_list_container = soup.select_one("#properties-list-tab-panel")
+        if not property_list_container:
+            logging.warning(
+                "OnTheMarket page structure may have changed; main property container not found."
+            )
+            return []
+
+        # Selectors for OnTheMarket. These have been verified as still correct.
+        for card in property_list_container.select("li.otm-PropertyCard"):
             try:
                 name_tag = card.select_one("span.otm-PropertyCard-address")
                 price_tag = card.select_one("div.otm-PropertyCard-price")
                 link_tag = card.select_one("a.otm-PropertyCard-link")
                 img_tag = card.select_one("img.otm-PropertyCard-image")
 
-                # Extract features like bedrooms and bathrooms
                 features = card.select("div.otm-PropertyCard-features span")
                 beds = 0
                 baths = 0
@@ -175,8 +190,10 @@ def scrape_onthemarket(url: str) -> List[Property]:
                         source="OnTheMarket",
                     )
                     properties.append(prop)
-            except (AttributeError, KeyError, TypeError) as e:
-                logging.warning(f"Skipping an OnTheMarket listing due to parsing error: {e}")
+            except (AttributeError, KeyError, TypeError, ValueError) as e:
+                logging.warning(
+                    f"Skipping an OnTheMarket listing due to parsing error: {e}"
+                )
                 continue
 
     except requests.RequestException as e:
@@ -186,11 +203,16 @@ def scrape_onthemarket(url: str) -> List[Property]:
 
 # --- State Management ---
 
+
 def load_sent_listings() -> Set[str]:
     """Loads the set of sent listing URLs from the file."""
     try:
         with open(SENT_LISTINGS_FILE, "r") as f:
-            return set(json.load(f))
+            # Handle case where the file is empty
+            content = f.read()
+            if not content:
+                return set()
+            return set(json.loads(content))
     except (FileNotFoundError, json.JSONDecodeError):
         return set()
 
@@ -202,6 +224,7 @@ def save_sent_listings(urls: Set[str]):
 
 
 # --- Notification ---
+
 
 def send_discord_notification(prop: Property, webhook_url: str):
     """Sends a single property listing to a Discord webhook."""
@@ -233,6 +256,7 @@ def send_discord_notification(prop: Property, webhook_url: str):
 
 # --- Main Execution ---
 
+
 def main():
     """Main function to run the scraper."""
     webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
@@ -241,22 +265,23 @@ def main():
         return
 
     urls = {
-        "rightmove": "https://www.rightmove.co.uk/property-to-rent/find.html?searchLocation=Guildford+Station&useLocationIdentifier=true&locationIdentifier=STATION%5E4037&radius=0.0&minPrice=100&maxPrice=1500&minBedrooms=1&maxBedrooms=2&_includeLetAgreed=on&maxBathrooms=2&index=0&sortType=6&channel=RENT&transactionType=LETTING&displayLocationIdentifier=undefined&minBathrooms=1&letType=longTerm&mustHave=parking&dontShow=houseShare%2Cretirement%2Cstudent&maxDaysSinceAdded=3",
-        "zoopla": "https://www.zoopla.co.uk/to-rent/property/schools/secondary/guildford-centre/?added=3_days&baths_max=2&baths_min=1&beds_max=2&beds_min=1&feature=has_parking_garage&is_retirement_home=false&is_shared_accommodation=false&is_student_accommodation=false&price_frequency=per_month&price_max=1500&q=Guildford%20Centre%2C%20Surrey%2C%20GU1&radius=1&search_source=to-rent",
-        "onthemarket": "https://www.onthemarket.com/to-rent/property/central-guildford/?let-length=long-term&max-bedrooms=2&min-bedrooms=1&max-price=1500&radius=1.0&recently-added=3-days&shared=false&student=false",
+        "rightmove": "https://www.rightmove.co.uk/property-to-rent/find.html?searchLocation=Guildford+Station&useLocationIdentifier=true&locationIdentifier=STATION%5E4037&radius=0.0&minPrice=100&maxPrice=1500&minBedrooms=1&maxBedrooms=2&_includeLetAgreed=on&maxBathrooms=2&index=0&sortType=6&channel=RENT&transactionType=LETTING&displayLocationIdentifier=undefined&minBathrooms=1&letType=longTerm&mustHave=parking&dontShow=houseShare%2Cretirement%2Cstudent&maxDaysSinceAdded=1",
+        "zoopla": "https://www.zoopla.co.uk/to-rent/property/schools/secondary/guildford-centre/?added=24_hours&baths_max=2&baths_min=1&beds_max=2&beds_min=1&feature=has_parking_garage&is_retirement_home=false&is_shared_accommodation=false&is_student_accommodation=false&price_frequency=per_month&price_max=1500&q=Guildford%20Centre%2C%20Surrey%2C%20GU1&radius=1&search_source=to-rent",
+        "onthemarket": "https://www.onthemarket.com/to-rent/property/central-guildford/?let-length=long-term&max-bedrooms=2&min-bedrooms=1&max-price=1500&radius=1.0&recently-added=24-hours&shared=false&student=false",
     }
 
-    # Scrape all sources
     all_listings = []
     all_listings.extend(scrape_rightmove(urls["rightmove"]))
     all_listings.extend(scrape_zoopla(urls["zoopla"]))
     all_listings.extend(scrape_onthemarket(urls["onthemarket"]))
 
     if not all_listings:
-        logging.info("No listings found in this run.")
+        logging.info("No new listings found across all sites in this run.")
+        # We still need to save state in case the previous run had listings
+        # that have now expired.
+        save_sent_listings(set())
         return
 
-    # Load state and identify new listings
     sent_urls = load_sent_listings()
     current_urls = {p.link for p in all_listings}
     new_listings = [p for p in all_listings if p.link not in sent_urls]
@@ -264,13 +289,9 @@ def main():
     logging.info(f"Found {len(all_listings)} total listings.")
     logging.info(f"Found {len(new_listings)} new listings to notify.")
 
-    # Send notifications
     for prop in new_listings:
         send_discord_notification(prop, webhook_url)
 
-    # Update state file
-    # The new state is the full set of currently visible listings.
-    # This automatically prunes listings that are no longer in the 24h window.
     save_sent_listings(current_urls)
     logging.info("Finished run.")
 
