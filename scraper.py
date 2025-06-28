@@ -12,7 +12,7 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# Using a session with more comprehensive headers to appear like a real browser
+# Using a session with comprehensive headers
 session = requests.Session()
 session.headers.update(
     {
@@ -26,15 +26,12 @@ session.headers.update(
     }
 )
 
-# File to store URLs of listings that have already been sent
 SENT_LISTINGS_FILE = "sent_listings.json"
 
 
 # --- Data Structure ---
 @dataclass
 class Property:
-    """A dataclass to hold property information."""
-
     name: str
     link: str
     image: str
@@ -49,7 +46,7 @@ class Property:
 def scrape_rightmove(url: str) -> List[Property]:
     """
     Scrapes property listings from a Rightmove URL.
-    UPDATED: Now parses the __NEXT_DATA__ JSON object.
+    UPDATED: Corrected the JSON path within the __NEXT_DATA__ object.
     """
     logging.info("Scraping Rightmove...")
     properties = []
@@ -58,15 +55,23 @@ def scrape_rightmove(url: str) -> List[Property]:
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
-        # UPDATED: Rightmove now uses a __NEXT_DATA__ script tag like Zoopla.
         script = soup.find("script", {"id": "__NEXT_DATA__"})
         if not script:
             logging.warning("Could not find __NEXT_DATA__ script on Rightmove.")
             return []
 
         data = json.loads(script.string)
-        # The path to the properties list has changed accordingly.
-        listings = data.get("props", {}).get("pageProps", {}).get("properties", [])
+        # UPDATED: The path to properties is inside 'results'.
+        listings = (
+            data.get("props", {})
+            .get("pageProps", {})
+            .get("results", {})
+            .get("properties", [])
+        )
+
+        if not listings:
+            logging.info("No listings found on Rightmove for this search.")
+            return []
 
         for listing in listings:
             try:
@@ -98,11 +103,17 @@ def scrape_rightmove(url: str) -> List[Property]:
 def scrape_zoopla(url: str) -> List[Property]:
     """
     Scrapes property listings from a Zoopla URL.
-    NOTE: The request headers in the session object are critical for this to work.
+    UPDATED: Now visits the homepage first to establish a session and get cookies.
     """
     logging.info("Scraping Zoopla...")
     properties = []
     try:
+        # UPDATED: First, visit the homepage to initialize the session.
+        logging.info("Initializing Zoopla session...")
+        session.get("https://www.zoopla.co.uk/")
+
+        # Now, make the request to the actual search URL.
+        logging.info("Fetching Zoopla search results...")
         response = session.get(url)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
@@ -119,6 +130,10 @@ def scrape_zoopla(url: str) -> List[Property]:
             .get("regularListings", {})
             .get("listings", [])
         )
+
+        if not listings:
+            logging.info("No listings found on Zoopla for this search.")
+            return []
 
         for listing in listings:
             try:
@@ -144,7 +159,7 @@ def scrape_zoopla(url: str) -> List[Property]:
 def scrape_onthemarket(url: str) -> List[Property]:
     """
     Scrapes property listings from an OnTheMarket URL.
-    This is less robust as it relies on specific CSS classes.
+    UPDATED: Now handles the 'no results' page gracefully.
     """
     logging.info("Scraping OnTheMarket...")
     properties = []
@@ -153,15 +168,25 @@ def scrape_onthemarket(url: str) -> List[Property]:
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 
-        # Improved check: See if the main container exists.
-        property_list_container = soup.select_one("#properties-list-tab-panel")
-        if not property_list_container:
-            logging.warning(
-                "OnTheMarket page structure may have changed; main property container not found."
+        # UPDATED: More robust checking.
+        # First, check if the page is a "no results" page.
+        no_results_header = soup.find(
+            "h1", string=re.compile(r"Sorry, no properties found")
+        )
+        if no_results_header:
+            logging.info(
+                "OnTheMarket returned a 'no results' page, which is expected."
             )
             return []
 
-        # Selectors for OnTheMarket. These have been verified as still correct.
+        # If not, look for the main container.
+        property_list_container = soup.select_one("#properties-list-tab-panel")
+        if not property_list_container:
+            logging.warning(
+                "OnTheMarket page structure may have changed; neither results nor 'no results' message found."
+            )
+            return []
+
         for card in property_list_container.select("li.otm-PropertyCard"):
             try:
                 name_tag = card.select_one("span.otm-PropertyCard-address")
@@ -170,8 +195,7 @@ def scrape_onthemarket(url: str) -> List[Property]:
                 img_tag = card.select_one("img.otm-PropertyCard-image")
 
                 features = card.select("div.otm-PropertyCard-features span")
-                beds = 0
-                baths = 0
+                beds, baths = 0, 0
                 for feature in features:
                     text = feature.get_text(strip=True).lower()
                     if "bed" in text:
@@ -201,14 +225,12 @@ def scrape_onthemarket(url: str) -> List[Property]:
     return properties
 
 
-# --- State Management ---
+# --- State Management & Notification (No changes needed below this line) ---
 
 
 def load_sent_listings() -> Set[str]:
-    """Loads the set of sent listing URLs from the file."""
     try:
         with open(SENT_LISTINGS_FILE, "r") as f:
-            # Handle case where the file is empty
             content = f.read()
             if not content:
                 return set()
@@ -218,16 +240,11 @@ def load_sent_listings() -> Set[str]:
 
 
 def save_sent_listings(urls: Set[str]):
-    """Saves the current set of listing URLs to the file."""
     with open(SENT_LISTINGS_FILE, "w") as f:
         json.dump(list(urls), f, indent=2)
 
 
-# --- Notification ---
-
-
 def send_discord_notification(prop: Property, webhook_url: str):
-    """Sends a single property listing to a Discord webhook."""
     embed = {
         "title": prop.name,
         "url": prop.link,
@@ -244,7 +261,6 @@ def send_discord_notification(prop: Property, webhook_url: str):
         "image": {"url": prop.image},
         "footer": {"text": f"Source: {prop.source}"},
     }
-
     payload = {"embeds": [embed]}
     try:
         response = requests.post(webhook_url, json=payload)
@@ -254,11 +270,7 @@ def send_discord_notification(prop: Property, webhook_url: str):
         logging.error(f"Failed to send Discord notification: {e}")
 
 
-# --- Main Execution ---
-
-
 def main():
-    """Main function to run the scraper."""
     webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
     if not webhook_url:
         logging.error("DISCORD_WEBHOOK_URL environment variable not set.")
@@ -277,8 +289,6 @@ def main():
 
     if not all_listings:
         logging.info("No new listings found across all sites in this run.")
-        # We still need to save state in case the previous run had listings
-        # that have now expired.
         save_sent_listings(set())
         return
 
